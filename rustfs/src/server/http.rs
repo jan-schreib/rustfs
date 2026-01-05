@@ -730,41 +730,44 @@ fn check_auth(req: Request<()>) -> std::result::Result<Request<()>, Status> {
 
 /// Determines the listen backlog size.
 ///
-/// It tries to read the system's maximum connection queue length (`somaxconn`).
+/// It tries to read the system's maximum connection queue length (`somaxconn` or `soacceptqueue`).
 /// If reading fails, it falls back to a default value (e.g., 1024).
 /// This makes the backlog size adaptive to the system configuration.
 fn get_listen_backlog() -> i32 {
     const DEFAULT_BACKLOG: i32 = 1024;
 
+    // For Linux, read from /proc/sys/net/core/somaxconn
     #[cfg(target_os = "linux")]
     {
-        // For Linux, read from /proc/sys/net/core/somaxconn
         match std::fs::read_to_string("/proc/sys/net/core/somaxconn") {
             Ok(s) => s.trim().parse().unwrap_or(DEFAULT_BACKLOG),
             Err(_) => DEFAULT_BACKLOG,
         }
     }
-    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+
+    // Fallback for Windows and other operating systems
+    #[cfg(not(target_family = "unix"))]
     {
-        // For macOS and BSD variants, use sysctl
-        use sysctl::Sysctl;
-        match sysctl::Ctl::new("kern.ipc.somaxconn") {
-            Ok(ctl) => match ctl.value() {
-                Ok(sysctl::CtlValue::Int(val)) => val,
-                _ => DEFAULT_BACKLOG,
-            },
-            Err(_) => DEFAULT_BACKLOG,
-        }
+        return DEFAULT_BACKLOG;
     }
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd"
-    )))]
-    {
-        // Fallback for Windows and other operating systems
-        DEFAULT_BACKLOG
+
+    // Handling of the different unix variants.
+    // The sysctl names differ slightly.
+    #[cfg(target_os = "openbsd")]
+    let sysctl_name = "kern.somaxconn";
+    #[cfg(any(target_os = "macos", target_os = "netbsd"))]
+    let sysctl_name = "kern.ipc.somaxconn";
+    #[cfg(target_os = "freebsd")]
+    let sysctl_name = "kern.ipc.soacceptqueue";
+
+    #[cfg(not(target_os = "linux"))]
+    use sysctl::Sysctl;
+
+    match sysctl::Ctl::new(sysctl_name) {
+        Ok(ctl) => match ctl.value() {
+            Ok(sysctl::CtlValue::Int(val)) => val,
+            _ => DEFAULT_BACKLOG,
+        },
+        Err(_) => DEFAULT_BACKLOG,
     }
 }
